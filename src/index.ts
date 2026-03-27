@@ -77,7 +77,7 @@ class AhaMcp {
               reference: {
                 type: "string",
                 description:
-                  "Reference number (e.g., DEVELOP-123 or ADT-123-1)",
+                  "Reference number (e.g., PHOE-3801, DEVELOP-123, or ADT-123-1 for a requirement)",
               },
             },
             required: ["reference"],
@@ -226,36 +226,42 @@ class AhaMcp {
         {
           name: "add_record_attachment",
           description:
-            "Attach a file to an Aha! feature or requirement (record description). Use fileBase64 + fileName for uploads, or fileUrl + fileName + contentType when the file is available at a public URL (preferred for large files to avoid MCP message size limits).",
+            "Attach a file to an Aha! feature or requirement (record description). Prefer filePath when the MCP runs locally: pass an absolute path and the server reads the file (no huge base64 in the tool message). Otherwise use fileBase64 + fileName, or fileUrl + fileName + contentType for a public URL (best for very large files).",
           inputSchema: {
             type: "object",
             properties: {
               reference: {
                 type: "string",
                 description:
-                  "Feature reference (e.g. DEVELOP-123) or requirement reference (e.g. ADT-123-1)",
+                  "Feature reference (e.g. PHOE-3801 or DEVELOP-123) or requirement reference (e.g. ADT-123-1)",
+              },
+              filePath: {
+                type: "string",
+                description:
+                  "Absolute path to a local file on the machine running this MCP server. Use instead of fileBase64 when possible. fileName defaults to the path's basename if omitted.",
               },
               fileBase64: {
                 type: "string",
                 description:
-                  "Base64-encoded file content (use this OR fileUrl, not both)",
+                  "Base64-encoded file content (use exactly one of filePath, fileBase64, or fileUrl)",
               },
               fileName: {
                 type: "string",
-                description: "Original file name including extension",
+                description:
+                  "Original file name including extension (required for fileBase64 and fileUrl; optional for filePath—defaults to basename of filePath)",
               },
               contentType: {
                 type: "string",
                 description:
-                  "MIME type (optional for fileBase64; required for fileUrl)",
+                  "MIME type (optional for filePath/fileBase64, inferred from extension for filePath when omitted; required for fileUrl)",
               },
               fileUrl: {
                 type: "string",
                 description:
-                  "Public URL of the file for Aha! to fetch (use this OR fileBase64, not both)",
+                  "Public URL of the file for Aha! to fetch (use exactly one of filePath, fileBase64, or fileUrl)",
               },
             },
-            required: ["reference", "fileName"],
+            required: ["reference"],
           },
         },
         {

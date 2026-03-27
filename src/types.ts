@@ -2,7 +2,7 @@ export interface Description {
   htmlBody: string;
 }
 
-export interface Record {
+export interface AhaRecord {
   name: string;
   description: Description;
   project?: {
@@ -19,11 +19,11 @@ export interface Record {
 }
 
 export interface FeatureResponse {
-  feature: Record;
+  feature: AhaRecord;
 }
 
 export interface RequirementResponse {
-  requirement: Record;
+  requirement: AhaRecord;
 }
 
 export interface PageResponse {

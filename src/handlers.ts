@@ -1,10 +1,12 @@
+import fs from "node:fs";
+import path from "node:path";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { GraphQLClient } from "graphql-request";
 import {
   FEATURE_REF_REGEX,
   REQUIREMENT_REF_REGEX,
   NOTE_REF_REGEX,
-  Record,
+  AhaRecord,
   FeatureResponse,
   RequirementResponse,
   PageResponse,
@@ -31,6 +33,28 @@ import {
   getFeaturesQuery,
 } from "./queries.js";
 
+/** Max upload size for filePath / fileBase64 (multipart). URL-based uploads are not limited here. */
+const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+
+function guessContentTypeFromFileName(fileName: string): string | undefined {
+  const ext = path.extname(fileName).toLowerCase();
+  const map: Record<string, string> = {
+    ".md": "text/markdown",
+    ".txt": "text/plain",
+    ".json": "application/json",
+    ".pdf": "application/pdf",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".svg": "image/svg+xml",
+    ".csv": "text/csv",
+    ".html": "text/html",
+    ".htm": "text/html",
+  };
+  return map[ext];
+}
+
 export class Handlers {
   constructor(
     private client: GraphQLClient,
@@ -51,7 +75,7 @@ export class Handlers {
     }
 
     try {
-      let result: Record | undefined;
+      let result: AhaRecord | undefined;
 
       if (FEATURE_REF_REGEX.test(reference)) {
         const data = await this.client.request<FeatureResponse>(
@@ -1093,12 +1117,15 @@ export class Handlers {
       fileName,
       contentType,
       fileUrl,
+      filePath,
     } = request.params.arguments as {
       reference: string;
       fileBase64?: string;
       fileName?: string;
       contentType?: string;
       fileUrl?: string;
+      /** Absolute path on the machine running the MCP server (avoids large base64 in tool args). */
+      filePath?: string;
     };
 
     if (!reference) {
@@ -1108,19 +1135,23 @@ export class Handlers {
       );
     }
 
-    const hasFile = fileBase64 != null && String(fileBase64).length > 0;
+    const hasPath =
+      filePath != null && String(filePath).trim().length > 0;
+    const hasFile =
+      fileBase64 != null && String(fileBase64).length > 0;
     const hasUrl = fileUrl != null && String(fileUrl).trim().length > 0;
 
-    if (hasFile && hasUrl) {
+    const modeCount = [hasPath, hasFile, hasUrl].filter(Boolean).length;
+    if (modeCount > 1) {
       throw new McpError(
         ErrorCode.InvalidParams,
-        "Provide either fileBase64 or fileUrl, not both"
+        "Provide exactly one of filePath, fileBase64, or fileUrl"
       );
     }
-    if (!hasFile && !hasUrl) {
+    if (modeCount === 0) {
       throw new McpError(
         ErrorCode.InvalidParams,
-        "Either fileBase64 or fileUrl is required"
+        "One of filePath, fileBase64, or fileUrl is required"
       );
     }
 
@@ -1131,7 +1162,8 @@ export class Handlers {
           "fileName is required when using fileBase64"
         );
       }
-    } else {
+    }
+    if (hasUrl) {
       if (!fileName || !String(fileName).trim()) {
         throw new McpError(
           ErrorCode.InvalidParams,
@@ -1150,7 +1182,52 @@ export class Handlers {
       const noteId = await this.getRecordDescriptionNoteId(reference);
 
       let result: unknown;
-      if (hasFile) {
+      if (hasPath) {
+        const resolved = path.resolve(String(filePath).trim());
+        if (!fs.existsSync(resolved)) {
+          throw new McpError(
+            ErrorCode.InvalidParams,
+            `filePath does not exist: ${resolved}`
+          );
+        }
+        const stat = fs.statSync(resolved);
+        if (!stat.isFile()) {
+          throw new McpError(
+            ErrorCode.InvalidParams,
+            `filePath must be a regular file: ${resolved}`
+          );
+        }
+        if (stat.size > MAX_ATTACHMENT_BYTES) {
+          throw new McpError(
+            ErrorCode.InvalidParams,
+            `File too large (${stat.size} bytes > ${MAX_ATTACHMENT_BYTES} bytes). Use fileUrl for large files.`
+          );
+        }
+        const buffer = fs.readFileSync(resolved);
+        if (buffer.length === 0) {
+          throw new McpError(
+            ErrorCode.InvalidParams,
+            "File is empty"
+          );
+        }
+        const finalName =
+          (fileName && String(fileName).trim()) || path.basename(resolved);
+        if (!finalName || finalName === "." || finalName === "..") {
+          throw new McpError(
+            ErrorCode.InvalidParams,
+            "Could not derive a valid fileName from filePath"
+          );
+        }
+        const ct =
+          (contentType && String(contentType).trim()) ||
+          guessContentTypeFromFileName(finalName);
+        result = await this.postNoteAttachmentMultipart(
+          noteId,
+          buffer,
+          finalName,
+          ct || undefined
+        );
+      } else if (hasFile) {
         let buffer: Buffer;
         try {
           buffer = Buffer.from(String(fileBase64), "base64");
@@ -1164,6 +1241,12 @@ export class Handlers {
           throw new McpError(
             ErrorCode.InvalidParams,
             "Decoded file is empty"
+          );
+        }
+        if (buffer.length > MAX_ATTACHMENT_BYTES) {
+          throw new McpError(
+            ErrorCode.InvalidParams,
+            `Decoded file too large (${buffer.length} bytes > ${MAX_ATTACHMENT_BYTES} bytes). Use filePath or fileUrl.`
           );
         }
         result = await this.postNoteAttachmentMultipart(
