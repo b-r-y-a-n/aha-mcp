@@ -224,6 +224,41 @@ class AhaMcp {
           },
         },
         {
+          name: "add_record_attachment",
+          description:
+            "Attach a file to an Aha! feature or requirement (record description). Use fileBase64 + fileName for uploads, or fileUrl + fileName + contentType when the file is available at a public URL (preferred for large files to avoid MCP message size limits).",
+          inputSchema: {
+            type: "object",
+            properties: {
+              reference: {
+                type: "string",
+                description:
+                  "Feature reference (e.g. DEVELOP-123) or requirement reference (e.g. ADT-123-1)",
+              },
+              fileBase64: {
+                type: "string",
+                description:
+                  "Base64-encoded file content (use this OR fileUrl, not both)",
+              },
+              fileName: {
+                type: "string",
+                description: "Original file name including extension",
+              },
+              contentType: {
+                type: "string",
+                description:
+                  "MIME type (optional for fileBase64; required for fileUrl)",
+              },
+              fileUrl: {
+                type: "string",
+                description:
+                  "Public URL of the file for Aha! to fetch (use this OR fileBase64, not both)",
+              },
+            },
+            required: ["reference", "fileName"],
+          },
+        },
+        {
           name: "get_user_by_email",
           description: "Get a user ID by email address",
           inputSchema: {
@@ -267,6 +302,8 @@ class AhaMcp {
         return this.handlers.handleUpdateFeature(request);
       } else if (request.params.name === "add_feature_comment") {
         return this.handlers.handleAddFeatureComment(request);
+      } else if (request.params.name === "add_record_attachment") {
+        return this.handlers.handleAddRecordAttachment(request);
       } else if (request.params.name === "get_user_by_email") {
         return this.handlers.handleGetUserByEmail(request);
       } else if (request.params.name === "get_configured_user") {

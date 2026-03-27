@@ -136,6 +136,25 @@ export interface UpdateFeatureResponse {
   };
 }
 
+/** REST API v1 record show response shape for description note id (feature or requirement). */
+export interface AhaRestDescription {
+  id?: string;
+}
+
+export interface AhaRestFeatureShow {
+  feature?: {
+    description?: AhaRestDescription | null;
+  };
+  description?: AhaRestDescription | null;
+}
+
+export interface AhaRestRequirementShow {
+  requirement?: {
+    description?: AhaRestDescription | null;
+  };
+  description?: AhaRestDescription | null;
+}
+
 export interface AddCommentResponse {
   createComment: {
     comment: {

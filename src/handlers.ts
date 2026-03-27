@@ -15,6 +15,8 @@ import {
   CreateFeatureResponse,
   UpdateFeatureResponse,
   AddCommentResponse,
+  AhaRestFeatureShow,
+  AhaRestRequirementShow,
 } from "./types.js";
 import {
   getFeatureQuery,
@@ -911,6 +913,302 @@ export class Handlers {
       throw new McpError(
         ErrorCode.InternalError,
         `Failed to add comment: ${errorMessage}`
+      );
+    }
+  }
+
+  private async ahaRestGetJson<T>(path: string): Promise<T> {
+    if (!this.apiToken || !this.domain) {
+      throw new McpError(
+        ErrorCode.InternalError,
+        "API token and domain are required"
+      );
+    }
+    const url = `https://${this.domain}.aha.io/api/v1${path}`;
+    const response = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${this.apiToken}`,
+        Accept: "application/json",
+      },
+    });
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new McpError(
+        ErrorCode.InternalError,
+        `Aha! API error ${response.status}: ${errText || response.statusText}`
+      );
+    }
+    return (await response.json()) as T;
+  }
+
+  private extractDescriptionNoteId(
+    data: AhaRestFeatureShow | AhaRestRequirementShow,
+    kind: "feature" | "requirement"
+  ): string | undefined {
+    if (kind === "feature") {
+      const d = data as AhaRestFeatureShow;
+      return (
+        d.feature?.description?.id ??
+        d.description?.id ??
+        (data as { feature?: { description?: { id?: string } } }).feature
+          ?.description?.id
+      );
+    }
+    const d = data as AhaRestRequirementShow;
+    return (
+      d.requirement?.description?.id ??
+      d.description?.id ??
+      (data as { requirement?: { description?: { id?: string } } })
+        .requirement?.description?.id
+    );
+  }
+
+  private async getRecordDescriptionNoteId(reference: string): Promise<string> {
+    let path: string;
+    let kind: "feature" | "requirement";
+
+    if (FEATURE_REF_REGEX.test(reference)) {
+      path = `/features/${encodeURIComponent(reference)}`;
+      kind = "feature";
+    } else if (REQUIREMENT_REF_REGEX.test(reference)) {
+      path = `/requirements/${encodeURIComponent(reference)}`;
+      kind = "requirement";
+    } else {
+      throw new McpError(
+        ErrorCode.InvalidParams,
+        "Invalid reference format. Expected a feature (e.g. DEVELOP-123) or requirement (e.g. ADT-123-1)"
+      );
+    }
+
+    const data =
+      kind === "feature"
+        ? await this.ahaRestGetJson<AhaRestFeatureShow>(path)
+        : await this.ahaRestGetJson<AhaRestRequirementShow>(path);
+
+    const noteId = this.extractDescriptionNoteId(data, kind);
+    if (!noteId) {
+      throw new McpError(
+        ErrorCode.InternalError,
+        "Could not find description note id for this record (missing description.id in API response)"
+      );
+    }
+    return noteId;
+  }
+
+  private async postNoteAttachmentMultipart(
+    noteId: string,
+    fileBytes: Buffer,
+    fileName: string,
+    contentType?: string
+  ): Promise<unknown> {
+    if (!this.apiToken || !this.domain) {
+      throw new McpError(
+        ErrorCode.InternalError,
+        "API token and domain are required"
+      );
+    }
+    const url = `https://${this.domain}.aha.io/api/v1/notes/${encodeURIComponent(noteId)}/attachments`;
+    const blob = new Blob([fileBytes], {
+      type: contentType || "application/octet-stream",
+    });
+    const formData = new FormData();
+    formData.append("attachment[data]", blob, fileName);
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${this.apiToken}`,
+        Accept: "application/json",
+      },
+      body: formData,
+    });
+
+    const text = await response.text();
+    let body: unknown;
+    try {
+      body = text ? JSON.parse(text) : {};
+    } catch {
+      body = { raw: text };
+    }
+
+    if (!response.ok) {
+      throw new McpError(
+        ErrorCode.InternalError,
+        `Failed to upload attachment: ${response.status} ${JSON.stringify(body)}`
+      );
+    }
+    return body;
+  }
+
+  private async postNoteAttachmentUrl(
+    noteId: string,
+    fileUrl: string,
+    fileName: string,
+    contentType: string
+  ): Promise<unknown> {
+    if (!this.apiToken || !this.domain) {
+      throw new McpError(
+        ErrorCode.InternalError,
+        "API token and domain are required"
+      );
+    }
+    const url = `https://${this.domain}.aha.io/api/v1/notes/${encodeURIComponent(noteId)}/attachments`;
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${this.apiToken}`,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({
+        attachment: {
+          file_url: fileUrl,
+          content_type: contentType,
+          file_name: fileName,
+        },
+      }),
+    });
+
+    const text = await response.text();
+    let body: unknown;
+    try {
+      body = text ? JSON.parse(text) : {};
+    } catch {
+      body = { raw: text };
+    }
+
+    if (!response.ok) {
+      throw new McpError(
+        ErrorCode.InternalError,
+        `Failed to create attachment from URL: ${response.status} ${JSON.stringify(body)}`
+      );
+    }
+    return body;
+  }
+
+  async handleAddRecordAttachment(request: any) {
+    const {
+      reference,
+      fileBase64,
+      fileName,
+      contentType,
+      fileUrl,
+    } = request.params.arguments as {
+      reference: string;
+      fileBase64?: string;
+      fileName?: string;
+      contentType?: string;
+      fileUrl?: string;
+    };
+
+    if (!reference) {
+      throw new McpError(
+        ErrorCode.InvalidParams,
+        "reference is required"
+      );
+    }
+
+    const hasFile = fileBase64 != null && String(fileBase64).length > 0;
+    const hasUrl = fileUrl != null && String(fileUrl).trim().length > 0;
+
+    if (hasFile && hasUrl) {
+      throw new McpError(
+        ErrorCode.InvalidParams,
+        "Provide either fileBase64 or fileUrl, not both"
+      );
+    }
+    if (!hasFile && !hasUrl) {
+      throw new McpError(
+        ErrorCode.InvalidParams,
+        "Either fileBase64 or fileUrl is required"
+      );
+    }
+
+    if (hasFile) {
+      if (!fileName || !String(fileName).trim()) {
+        throw new McpError(
+          ErrorCode.InvalidParams,
+          "fileName is required when using fileBase64"
+        );
+      }
+    } else {
+      if (!fileName || !String(fileName).trim()) {
+        throw new McpError(
+          ErrorCode.InvalidParams,
+          "fileName is required when using fileUrl"
+        );
+      }
+      if (!contentType || !String(contentType).trim()) {
+        throw new McpError(
+          ErrorCode.InvalidParams,
+          "contentType is required when using fileUrl"
+        );
+      }
+    }
+
+    try {
+      const noteId = await this.getRecordDescriptionNoteId(reference);
+
+      let result: unknown;
+      if (hasFile) {
+        let buffer: Buffer;
+        try {
+          buffer = Buffer.from(String(fileBase64), "base64");
+        } catch {
+          throw new McpError(
+            ErrorCode.InvalidParams,
+            "fileBase64 must be valid base64"
+          );
+        }
+        if (buffer.length === 0) {
+          throw new McpError(
+            ErrorCode.InvalidParams,
+            "Decoded file is empty"
+          );
+        }
+        result = await this.postNoteAttachmentMultipart(
+          noteId,
+          buffer,
+          String(fileName).trim(),
+          contentType?.trim() || undefined
+        );
+      } else {
+        result = await this.postNoteAttachmentUrl(
+          noteId,
+          String(fileUrl).trim(),
+          String(fileName).trim(),
+          String(contentType).trim()
+        );
+      }
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              {
+                success: true,
+                reference,
+                descriptionNoteId: noteId,
+                attachment: result,
+              },
+              null,
+              2
+            ),
+          },
+        ],
+      };
+    } catch (error) {
+      if (error instanceof McpError) {
+        throw error;
+      }
+
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      console.error("API Error:", errorMessage);
+      throw new McpError(
+        ErrorCode.InternalError,
+        `Failed to add attachment: ${errorMessage}`
       );
     }
   }
